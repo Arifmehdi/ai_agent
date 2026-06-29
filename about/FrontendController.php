@@ -1,0 +1,2428 @@
+<?php
+
+namespace App\Http\Controllers\Frontend;
+
+use App\Http\Controllers\Controller;
+use App\Models\Enrollment;
+use App\Models\AmbulanceService;
+use App\Models\BookAppointment;
+use App\Models\Cart;
+use App\Models\DeliveryLocation;
+use App\Models\Gallery;
+use App\Models\Order;
+use App\Models\OrderItem;
+use App\Models\Page;
+use App\Models\Product;
+use App\Models\District;
+use App\Models\Division;
+use App\Models\ProductCategory;
+use App\Models\ProductReview;
+use App\Models\shippingMethod;
+use App\Models\WebsiteParameter;
+use App\Models\Upazila;
+use Illuminate\Http\Request;
+use Alert;
+use App\Models\Department;
+use App\Models\BlogCategory;
+use App\Models\BlogPost;
+use App\Models\Doctor;
+use App\Models\FrontSlider;
+use App\Models\Hospital;
+use App\Models\User;
+use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Session;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Mail;
+use App\Mail\OrderConfirmationEmail;
+use App\Mail\UserCredentialsEmail;
+use App\Models\Testimonial;
+
+class FrontendController extends Controller
+{
+
+    public function __construct()
+    {
+        $this->middleware('locale');
+    }
+
+    public function index()
+    {
+        // Get all active course categories with their courses
+        $data['categories'] = ProductCategory::where('active', true)
+            ->where('type', 'course')
+            ->whereNull('parent_id')
+            ->with(['products' => function($query) {
+                $query->where('active', 1)
+                      ->where('type', 'course')
+                      ->select('products.id', 'products.name_en', 'products.slug', 'products.featured_image', 'products.price', 'products.discount_price', 'products.selling_price', 'products.feature', 'products.active', 'type')
+                      ->take(8);
+            }])
+            ->whereHas('products', function($query) {
+                $query->where('active', true)->where('type', 'course');
+            })
+            ->select('id', 'name_en', 'name_bn', 'slug','image', 'active')
+            ->get();
+
+        $data['feature_products'] = Product::whereActive(true)
+            ->where('type', 'course')
+            ->where('feature', true)
+            ->with(['categories', 'instructor'])
+            ->limit(20)
+            ->get();
+
+        $data['departments'] = Department::whereActive(true)
+            ->select('image','name_en','name_bn','excerpt_en')
+            ->get();
+        
+        $data['testimonials'] = Testimonial::whereActive(true)
+            ->latest()
+            ->limit(5)
+            ->select('id','name','designation','image','text_en','designation')
+            ->get();
+
+        $data['newses'] = BlogPost::whereActive(true)->limit(3)->get();
+        $data['sliders'] = FrontSlider::whereActive(true)
+            ->select('featured_image','title','description','link')
+            ->get();
+
+        $data['brands'] = Gallery::whereActive(true)
+            ->where('file_type', 'image')
+            ->orderBy('priority', 'asc')
+            ->get();
+
+        $data['sale_products'] = Product::whereActive(true)
+            ->where('type', 'course')
+            ->whereNotNull('discount_price')
+            ->latest()
+            ->limit(3)
+            ->get();
+
+        $data['latest_products'] = Product::whereActive(true)
+            ->where('type', 'course')
+            ->latest()
+            ->limit(3)
+            ->get();
+
+        $data['best_products'] = Product::whereActive(true)
+            ->where('type', 'course')
+            ->where('feature', true)
+            ->latest()
+            ->limit(3)
+            ->get();
+
+        $data['popular_products'] = Product::whereActive(true)
+            ->where('type', 'course')
+            ->orderByDesc('click_count')
+            ->limit(3)
+            ->get();
+
+        $data['content'] = \App\Models\PageContent::where('page_slug', 'home')->first();
+
+        // Courses the logged-in user is already actively enrolled in
+        $data['enrolledCourseIds'] = [];
+        if (Auth::check()) {
+            $data['enrolledCourseIds'] = Enrollment::where('user_id', Auth::id())
+                ->where('status', 'active')
+                ->pluck('product_id')
+                ->filter()
+                ->toArray();
+        }
+
+        // Courses already in the user's / guest's cart
+        $data['cartCourseIds'] = $this->cartCourseIds();
+
+        return view('website.index', $data);
+    }
+
+    // For lazy loading products via AJAX
+    public function getProductsByCategory($categoryId)
+    {
+        $products = Product::whereHas('categories', function($query) use ($categoryId) {
+                $query->where('product_categories.id', $categoryId);
+            })
+            ->where('active', true)
+            ->get();
+
+        return response()->json([
+            'products' => $products,
+            'html' => view('frontend.partials.products-grid', compact('products'))->render()
+        ]);
+    }
+
+
+    public function mdMessage()
+    {
+        $wp = WebsiteParameter::first();
+        return view('website.mdMessage', compact('wp'));  
+    }
+    
+    public function shop(Request $request)
+    {
+        $query = Product::whereActive(true)->where('type', 'product');
+
+        // Search
+        if ($request->has('search')) {
+            $query->where('name_en', 'like', '%' . $request->get('search') . '%');
+        }
+
+        // Category Filter
+        if ($request->has('category')) {
+            $query->whereHas('categories', function($q) use ($request) {
+                $q->whereIn('product_categories.slug', (array)$request->category);
+            });
+        }
+
+        // Price filter
+        if ($request->has('price')) {
+            if ($request->price == '0-1000') {
+                $query->whereBetween('selling_price', [0, 1000]);
+            } elseif ($request->price == '1000-5000') {
+                $query->whereBetween('selling_price', [1000, 5000]);
+            } elseif ($request->price == '5000-plus') {
+                $query->where('selling_price', '>', 5000);
+            }
+        }
+
+        // Sorting
+        if ($request->get('sort') == 1) {
+            $query->latest();
+        } elseif ($request->get('sort') == 2) {
+            $query->oldest();
+        } elseif ($request->get('sort') == 3) {
+            $query->orderBy('selling_price', 'desc');
+        } elseif ($request->get('sort') == 4) {
+            $query->orderBy('selling_price', 'asc');
+        } else {
+            $query->latest();
+        }
+
+        $products = $query->paginate(12)->appends($request->all());
+
+        $total_products = $query->count();
+
+        // Get all root categories for sidebar
+        $allRootCategories = ProductCategory::whereNull('parent_id')
+            ->where('active', 1)
+            ->where('type', 'product')
+            ->orderBy('name_en')
+            ->get();
+        
+        // Top clicked products
+        $topClickedProducts = Product::where('active', true)
+            ->where('type', 'product')
+            ->where('feature', true)
+            ->orderByDesc('click_count')
+            ->limit(6)
+            ->get();
+
+        // Get cart product IDs for current user or guest session
+        $cartProductIds = [];
+        if(auth()->check()) {
+            $cartProductIds = Cart::where('user_id', auth()->id())
+                ->whereNull('ebook_id')
+                ->pluck('product_id')
+                ->toArray();
+        } elseif(session('session_id')) {
+            $cartProductIds = Cart::where('session_id', session('session_id'))
+                ->whereNull('ebook_id')
+                ->pluck('product_id')
+                ->toArray();
+        }
+
+        return view("website.shop", compact(
+            'products', 
+            'total_products', 
+            'allRootCategories',
+            'topClickedProducts',
+            'cartProductIds'
+        ));
+
+    }
+
+    public function quickView(Request $request)
+    {
+        $product = Product::with('categories', 'reviews')->findOrFail($request->id);
+        
+        $html = view('website.partials.quick_view', compact('product'))->render();
+
+        return response()->json([
+            'html' => $html
+        ]);
+    }
+
+
+    public function about()
+    {
+        $data['testimonials'] = Testimonial::whereActive(true)
+            ->latest()
+            ->limit(5)
+            ->select('id','name','designation','image','text_en','designation')
+            ->get();
+        
+        $data['content'] = \App\Models\PageContent::where('page_slug', 'about')->first();
+
+        return view('website.about', $data);  
+    }
+
+    public function testimonial()
+    {
+        $testimonials = Testimonial::latest()->get(); // Fetch all testimonials
+        return view('website.testimonial', compact('testimonials'));  
+    }
+
+
+    // public function product()
+    // {
+    //     return view('frontend.product');
+    // }
+
+    public function contact()
+    {
+        return view('website.contact');
+    }
+
+    public function courses(Request $request)
+    {
+        $query = Product::whereActive(true)->where('type', 'course')->with(['categories', 'instructor']);
+
+        // Category Filter
+        if ($request->has('category')) {
+            $query->whereHas('categories', function($q) use ($request) {
+                $q->whereIn('product_categories.slug', (array)$request->category);
+            });
+        }
+
+        // Price Filter
+        if ($request->has('price')) {
+            if ($request->price == 'free') {
+                $query->where('selling_price', 0);
+            } elseif ($request->price == '1k-5k') {
+                $query->whereBetween('selling_price', [1000, 5000]);
+            } elseif ($request->price == '5k-plus') {
+                $query->where('selling_price', '>', 5000);
+            }
+        }
+
+        $courses = $query->latest()->paginate(12)->appends($request->all());
+        
+        $categories = ProductCategory::whereActive(true)
+            ->where('type', 'course')
+            ->whereNull('parent_id')
+            ->with(['children' => function($q) {
+                $q->where('active', true);
+            }])
+            ->whereHas('products')
+            ->orderBy('name_en')
+            ->get();
+
+        $content = \App\Models\PageContent::where('page_slug', 'courses')->first();
+
+        // Courses the logged-in user is already actively enrolled in
+        $enrolledCourseIds = [];
+        if (Auth::check()) {
+            $enrolledCourseIds = Enrollment::where('user_id', Auth::id())
+                ->where('status', 'active')
+                ->pluck('product_id')
+                ->filter()
+                ->toArray();
+        }
+
+        // Courses already in the user's / guest's cart
+        $cartCourseIds = $this->cartCourseIds();
+
+        return view('website.courses', compact('courses', 'categories', 'content', 'enrolledCourseIds', 'cartCourseIds'));
+    }
+
+    /**
+     * Product IDs of courses/products currently in the user's (or guest's) cart.
+     */
+    private function cartCourseIds()
+    {
+        if (Auth::check()) {
+            return Cart::where('user_id', Auth::id())
+                ->whereNotNull('product_id')
+                ->pluck('product_id')
+                ->toArray();
+        }
+
+        if (session('session_id')) {
+            return Cart::where('session_id', session('session_id'))
+                ->whereNotNull('product_id')
+                ->pluck('product_id')
+                ->toArray();
+        }
+
+        return [];
+    }
+
+    public function instructorProfile($id)
+    {
+        $instructor = User::findOrFail($id);
+
+        $courses = Product::where('type', 'course')
+            ->where('active', true)
+            ->where('instructor_id', $instructor->id)
+            ->withCount(['lessons' => function ($q) {
+                $q->where('active', 1);
+            }])
+            ->latest()
+            ->get();
+
+        // Only expose genuine instructors (by role or by having courses)
+        $isInstructor = in_array($instructor->role, ['instructor', 'teacher'])
+            || $instructor->hasRole('instructor')
+            || $instructor->hasRole('teacher')
+            || $courses->count() > 0;
+
+        abort_unless($isInstructor, 404);
+
+        return view('website.instructor_profile', compact('instructor', 'courses'));
+    }
+
+    public function courseDetail($slug)
+    {
+        $product = Product::where('slug', $slug)
+            ->where('active', true)
+            ->with(['instructor', 'reviews.user', 'enrollments', 'sections.lessons'])
+            ->firstOrFail();
+
+        // If user is already enrolled, redirect to player
+        if (Auth::check()) {
+            $isEnrolled = \App\Models\Enrollment::where('user_id', Auth::id())
+                ->where('product_id', $product->id)
+                ->where('status', 'active')
+                ->exists();
+            
+            if ($isEnrolled) {
+                return redirect()->route('course.play', $slug);
+            }
+        }
+
+        // Related courses (same category, type: course)
+        $relatedCourses = Product::where('type', 'course')
+            ->whereHas('categories', function ($q) use ($product) {
+                $q->whereIn('product_categories.id', $product->categories->pluck('id'));
+            })
+            ->where('id', '!=', $product->id)
+            ->where('active', true)
+            ->take(4)
+            ->get();
+
+        // Related products (same category, type: product)
+        $relatedProducts = Product::where('type', 'product')
+            ->whereHas('categories', function ($q) use ($product) {
+                $q->whereIn('product_categories.id', $product->categories->pluck('id'));
+            })
+            ->where('active', true)
+            ->take(4)
+            ->get();
+
+        $lessons = \App\Models\CourseLesson::where('product_id', $product->id)->where('active', true)->orderBy('priority')->get();
+        $sections = \App\Models\CourseSection::where('product_id', $product->id)->where('active', true)->with(['lessons' => function($q) {
+            $q->where('active', true)->orderBy('priority');
+        }])->orderBy('priority')->get();
+
+        $completions = [];
+        if (Auth::check()) {
+            $completions = \App\Models\LessonCompletion::where('user_id', Auth::id())
+                ->whereIn('course_lesson_id', $lessons->pluck('id'))
+                ->pluck('course_lesson_id')
+                ->toArray();
+        }
+
+        // Is this course already in the cart?
+        $inCart = in_array($product->id, $this->cartCourseIds());
+
+        return view('website.course_detail', compact('product', 'relatedCourses', 'relatedProducts', 'lessons', 'sections', 'completions', 'inCart'));
+    }
+
+    public function coursePlay($slug)
+    {
+        $product = Product::where('slug', $slug)
+            ->where('active', true)
+            ->with(['sections.lessons', 'instructor'])
+            ->firstOrFail();
+
+        // Security: Check if user is enrolled
+        $isEnrolled = \App\Models\Enrollment::where('user_id', Auth::id())
+            ->where('product_id', $product->id)
+            ->where('status', 'active')
+            ->exists();
+
+        if (!$isEnrolled) {
+            return redirect()->route('courseDetail', $slug)->with('error', 'Please enroll in the course to start learning.');
+        }
+
+        $lessons = \App\Models\CourseLesson::where('product_id', $product->id)->where('active', true)->orderBy('priority')->get();
+        $sections = \App\Models\CourseSection::where('product_id', $product->id)->where('active', true)->with(['lessons' => function($q) {
+            $q->where('active', true)->orderBy('priority');
+        }])->orderBy('priority')->get();
+
+        $completions = \App\Models\LessonCompletion::where('user_id', Auth::id())
+            ->whereIn('course_lesson_id', $lessons->pluck('id'))
+            ->pluck('course_lesson_id')
+            ->toArray();
+
+        return view('website.course_play', compact('product', 'lessons', 'sections', 'completions'));
+    }
+
+    public function liveProductSearch(Request $request)
+    {
+        $q = trim($request->get('q', ''));
+        if (strlen($q) < 1) return response()->json([]);
+
+        try {
+            // Collect current cart contents to show in-cart state
+            $userId    = Auth::id();
+            $sessionId = Session::get('session_id') ?? Session::getId();
+
+            $cartWhere = function ($q) use ($userId, $sessionId) {
+                if ($userId) {
+                    $q->where('user_id', $userId);
+                } else {
+                    $q->where('session_id', $sessionId);
+                }
+            };
+
+            $cartProductIds = Cart::where($cartWhere)->whereNotNull('product_id')
+                                  ->pluck('product_id')->toArray();
+            $cartEbookIds   = Cart::where($cartWhere)->whereNotNull('ebook_id')
+                                  ->pluck('ebook_id')->toArray();
+
+            $results = [];
+
+            // ── Shop Products ──────────────────────────────────────
+            Product::where('active', 1)->where('type', 'product')
+                ->whereNotNull('slug')
+                ->where(fn($b) => $b->where('name_en','like',"%{$q}%")->orWhere('name_bn','like',"%{$q}%"))
+                ->select(['id','name_en','name_bn','selling_price','discount','featured_image','slug','stock'])
+                ->limit(4)->get()
+                ->each(function ($p) use (&$results, $cartProductIds) {
+                    $results[] = $this->searchFormatProduct($p, 'product', $cartProductIds);
+                });
+
+            // ── Courses ────────────────────────────────────────────
+            Product::where('active', 1)->where('type', 'course')
+                ->whereNotNull('slug')
+                ->where(fn($b) => $b->where('name_en','like',"%{$q}%")->orWhere('name_bn','like',"%{$q}%"))
+                ->select(['id','name_en','name_bn','selling_price','discount','featured_image','slug','stock'])
+                ->limit(3)->get()
+                ->each(function ($p) use (&$results, $cartProductIds) {
+                    $results[] = $this->searchFormatProduct($p, 'course', $cartProductIds);
+                });
+
+            // ── Ebooks ─────────────────────────────────────────────
+            \App\Models\Ebook::where('active', 1)
+                ->where(fn($b) => $b->where('title_en','like',"%{$q}%")->orWhere('title_bn','like',"%{$q}%"))
+                ->select(['id','title_en','title_bn','price','discount','cover_image','is_free'])
+                ->limit(3)->get()
+                ->each(function ($e) use (&$results, $cartEbookIds) {
+                    $results[] = $this->searchFormatEbook($e, $cartEbookIds);
+                });
+
+            return response()->json(array_values(array_slice($results, 0, 10)));
+        } catch (\Exception $e) {
+            return response()->json([]);
+        }
+    }
+
+    private function searchFormatProduct($p, string $type, array $cartIds = []): array
+    {
+        try { $img = route('imagecache', ['template' => 'pnism', 'filename' => $p->fi()]); }
+        catch (\Exception $e) { $img = asset('sikhobd/img/placeholder.png'); }
+        try {
+            $url = $type === 'course'
+                ? route('courseDetail', $p->slug)
+                : route('productDetails', $p->slug);
+        }
+        catch (\Exception $e) { $url = '#'; }
+
+        return [
+            'id'              => $p->id,
+            'name'            => $p->name_en ?: ($p->name_bn ?: ''),
+            'selling_price'   => (float)($p->selling_price ?? 0),
+            'discount'        => (float)($p->discount ?? 0),
+            'final_price'     => (float)$p->discounted_price,
+            'image'           => $img,
+            'url'             => $url,
+            'cart_url'        => route('addToCart'),
+            'in_stock'        => $type === 'product' ? (int)($p->stock ?? 0) > 0 : true,
+            'in_cart'         => in_array($p->id, $cartIds),
+            'item_type'       => $type,
+            'is_free'         => false,
+        ];
+    }
+
+    private function searchFormatEbook($e, array $cartIds = []): array
+    {
+        $img = $e->cover_image
+            ? asset('storage/ebook_covers/' . $e->cover_image)
+            : asset('sikhobd/img/placeholder.png');
+
+        $price = (float)($e->price ?? 0);
+        $disc  = (float)($e->discount ?? 0);
+
+        return [
+            'id'              => $e->id,
+            'name'            => $e->title_en ?: ($e->title_bn ?: ''),
+            'selling_price'   => $price,
+            'discount'        => $disc,
+            'final_price'     => $e->is_free ? 0 : max(0, $price - $disc),
+            'image'           => $img,
+            'url'             => route('ebooks.show', $e->id),
+            'cart_url'        => route('ebooks.buy', $e->id),
+            'in_stock'        => true,
+            'in_cart'         => in_array($e->id, $cartIds),
+            'item_type'       => 'ebook',
+            'is_free'         => (bool)$e->is_free,
+        ];
+    }
+
+    public function search(Request $request)
+    {
+        $queryString = trim($request->get('q', ''));
+        $type = $request->get('type', 'all');
+        $suggestions = collect();
+
+        if (empty($queryString)) {
+            $products = Product::whereNull('id')->paginate(12);
+        } else {
+            $products = Product::where('active', true)
+                ->when($type !== 'all', function ($query) use ($type) {
+                    return $query->where('type', $type);
+                })
+                ->where(function ($query) use ($queryString) {
+                    $query->where('name_en', 'like', "%{$queryString}%")
+                        ->orWhere('name_bn', 'like', "%{$queryString}%")
+                        ->orWhere('excerpt_en', 'like', "%{$queryString}%")
+                        ->orWhere('excerpt_bn', 'like', "%{$queryString}%")
+                        ->orWhere('description_en', 'like', "%{$queryString}%")
+                        ->orWhere('description_bn', 'like', "%{$queryString}%");
+                })
+                ->orderByRaw("CASE WHEN name_en LIKE ? THEN 0 ELSE 1 END", ["{$queryString}%"])
+                ->latest()
+                ->paginate(12)
+                ->appends(['q' => $queryString, 'type' => $type]);
+
+            if (!$products->count()) {
+                $suggestions = Product::where('active', true)
+                    ->when($type !== 'all', function ($query) use ($type) {
+                        return $query->where('type', $type);
+                    })
+                    ->latest()
+                    ->limit(6)
+                    ->get();
+            }
+        }
+
+        return view('website.search', compact('products', 'queryString', 'type', 'suggestions'));
+    }
+
+    public function streamVideo(\App\Models\CourseLesson $lesson)
+    {
+        // Security check: must be enrolled or lesson must be free
+        $isEnrolled = \App\Models\Enrollment::where('user_id', Auth::id())
+            ->where('product_id', $lesson->product_id)
+            ->where('status', 'active')
+            ->exists();
+
+        if (!$isEnrolled && !$lesson->is_free) {
+            abort(403, 'Unauthorized access to this lesson.');
+        }
+
+        if (!$lesson->video_file) {
+            abort(404, 'Video file not found.');
+        }
+
+        $path = storage_path('app/public/' . $lesson->video_file);
+
+        if (!file_exists($path)) {
+            abort(404, 'Video file does not exist on server.');
+        }
+
+        $size = filesize($path);
+        $file = fopen($path, 'rb');
+        $contentType = 'video/mp4';
+
+        if (isset($_SERVER['HTTP_RANGE'])) {
+            $range = $_SERVER['HTTP_RANGE'];
+            preg_match('/bytes=(\d+)-(\d+)?/', $range, $matches);
+            $start = intval($matches[1]);
+            $end = isset($matches[2]) ? intval($matches[2]) : $size - 1;
+
+            header('HTTP/1.1 206 Partial Content');
+            header('Content-Type: ' . $contentType);
+            header('Accept-Ranges: bytes');
+            header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
+            header('Content-Length: ' . ($end - $start + 1));
+            
+            fseek($file, $start);
+            while (!feof($file) && ($pos = ftell($file)) <= $end) {
+                if ($pos + 1024 * 8 > $end) {
+                    echo fread($file, $end - $pos + 1);
+                    break;
+                }
+                echo fread($file, 1024 * 8);
+                flush();
+            }
+            fclose($file);
+            exit;
+        }
+
+        header('Content-Type: ' . $contentType);
+        header('Content-Length: ' . $size);
+        header('Accept-Ranges: bytes');
+        
+        fpassthru($file);
+        fclose($file);
+        exit;
+    }
+
+    public function toggleLessonCompletion(Request $request)
+    {
+        if (!Auth::check()) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+
+        $lessonId = $request->lesson_id;
+        $lesson = \App\Models\CourseLesson::findOrFail($lessonId);
+
+        // Check if user is enrolled in the course this lesson belongs to
+        $isEnrolled = \App\Models\Enrollment::where('user_id', Auth::id())
+            ->where('product_id', $lesson->product_id)
+            ->where('status', 'active')
+            ->exists();
+
+        if (!$isEnrolled) {
+            return response()->json(['error' => 'Not enrolled in this course'], 403);
+        }
+
+        $completion = \App\Models\LessonCompletion::where('user_id', Auth::id())
+            ->where('course_lesson_id', $lessonId)
+            ->first();
+
+        if ($completion) {
+            $completion->delete();
+            $status = 'uncompleted';
+        } else {
+            \App\Models\LessonCompletion::create([
+                'user_id' => Auth::id(),
+                'course_lesson_id' => $lessonId,
+                'completed_at' => now(),
+            ]);
+            $status = 'completed';
+        }
+
+        return response()->json(['status' => $status]);
+    }
+    public function service()
+    {
+        $data['services'] = Hospital::latest()->whereActive(true)->get(); 
+        $data['content'] = \App\Models\PageContent::where('page_slug', 'process')->first();
+        return view('website.process', $data);
+    }
+
+    public function login()
+    {
+        return view('website.login');
+    }
+
+    public function enroll(Request $request, $slug)
+    {
+        $course = Product::where('slug', $slug)->where('active', true)->firstOrFail();
+
+        if (Auth::check()) {
+            // Check if already enrolled
+            $existing = Enrollment::where('user_id', Auth::id())->where('product_id', $course->id)->first();
+            if ($existing) {
+                return redirect()->back()->with('info', 'You are already enrolled in this course.');
+            }
+
+            // Handle Free Enrollment
+            if ($course->isFree()) {
+                Enrollment::create([
+                    'user_id'     => Auth::id(),
+                    'product_id'  => $course->id,
+                    'enrolled_at' => now(),
+                    'status'      => 'active',
+                ]);
+
+                return redirect()->back()->with('success', 'Congratulations! You have successfully enrolled in this course.');
+            }
+
+            // Handle Paid Enrollment (Add to Cart and Go to Checkout)
+            // Check if already in cart
+            $cart = Cart::where('user_id', Auth::id())->where('product_id', $course->id)->first();
+            if (!$cart) {
+                Cart::create([
+                    'user_id'    => Auth::id(),
+                    'product_id' => $course->id,
+                    'quantity'   => 1,
+                ]);
+            }
+        } else {
+            // Handle guest enrollment via session
+            $sessionId = session('session_id');
+            if (!$sessionId) {
+                $sessionId = Str::random(40);
+                session(['session_id' => $sessionId]);
+            }
+
+            $cart = Cart::where('session_id', $sessionId)->where('product_id', $course->id)->first();
+            if (!$cart) {
+                Cart::create([
+                    'session_id' => $sessionId,
+                    'product_id' => $course->id,
+                    'quantity'   => 1,
+                ]);
+            }
+        }
+
+        return redirect()->route('cart')->with('success', 'Course added to cart. Please complete checkout to enroll.');
+    }
+
+
+
+    public function page($slug)
+    {
+        $data['page'] = Page::whereActive('slug', $slug)->first();
+        return view('frontend.home.page_content', $data);
+    }
+
+    public function websiteCompliance()
+    {
+      
+        return view("frontend.home.websiteCompliance");
+    }
+
+
+
+    public function doctorDashboard(){
+        $data['doctor'] = auth()->user()->doctor;
+        return view('frontend.home.doctor-dashbord',$data);
+    }
+
+
+    public function profile(){
+        return view('frontend.home.profile');
+    }
+
+    public function oldPassword(Request $request){
+        $password = auth()->user()->password;
+        if(Hash::check($request->old_pwd,$password)){
+           return response()->json([
+                'success' => true,
+           ]);
+        }else{
+          return response()->json([
+             'success' => false,
+          ]);
+        }
+    }
+
+
+
+    public function updatePassword(Request $request){
+        $request->validate([
+            'old_password' => 'required',
+            'new_password' => 'required',
+        ]);
+         $old_password = auth()->user()->password;
+         if(Hash::check($request->old_password, $old_password)){
+            if(!Hash::check($request->new_password, $old_password)){
+              if($request->new_password == $request->confirm_password){
+                 $user = User::find(Auth::id());
+                 $user->password = Hash::make($request->new_password);
+                 $user->password_temp = null;
+                 $user->save();
+                 return redirect()->back();
+                 Alert::error('success', 'Password Change Successfully!');
+                 return redirect()->back();
+              }else{
+                Alert::error('Error', 'New password and Confirm doed not match!');
+                return redirect()->back();
+              }
+
+            }else{
+                Alert::error('Error', 'New password and Current password are same');
+                return redirect()->back();
+            }
+
+         }else{
+            Alert::error('Error','Current password is not match');
+            return redirect()->back();
+         }
+    }
+
+
+    public function updateProfile(Request $request){
+        $user = User::find(Auth::id());
+        if($request->hasFile('image')){
+            if ($user->image) {
+                Storage::delete('public/user_images/'.$user->image);
+            }
+            $image = $request->file('image');
+            $image_ex =  $image->getClientOriginalExtension();
+            $file_path = date('ymdhis').'.'.$image_ex;
+            $image->storeAs('user_images', $file_path,'public');
+        }else{
+            $file_path =  $user->image;
+        }
+
+        $user->image  =  $file_path;
+        $user->save();
+        Alert::Success('Success','Profile Update successfuly');
+        return redirect()->back();
+    }
+
+
+
+
+   public function selectGetDoctor(Request $request){
+
+      $hospital = Hospital::find($request->hospital_id);
+      $doctors = $hospital->doctors()->get();
+      return response()->json($doctors);
+   }
+
+
+
+    public function ambulanceProviderList(){
+        $data['ambulances'] = AmbulanceService::whereActive(true)->get();
+        return view('frontend.home.ambulanceProviderList',$data);
+    }
+
+    public function charity()
+    {
+        return view('frontend.home.charity');
+    }
+   
+
+    public function qurbaniOccation()
+    {
+        $data = null;
+        return view('website.qurbaniOccation');
+        // $data['doctors'] =  Doctor::whereActive(true)->get();
+        // $data['departments'] =  BisesoggoCategory::whereActive(true)->get();
+        // return view('frontend.home.doctorList',$data);
+    }
+
+    public function qurbaniRegular()
+    {
+        $data = null;
+        return view('website.qurbaniRegular');
+        // $data['doctors'] =  Doctor::whereActive(true)->get();
+        // $data['departments'] =  BisesoggoCategory::whereActive(true)->get();
+        // return view('frontend.home.doctorList',$data);
+    }
+
+    public function doctorDetails($id){
+        $data['doctor'] = $doctor =  Doctor::whereActive(true)->find($id);
+        $data['department'] = $department = $doctor->department;
+        $data['doctors'] =  Doctor::whereActive(true)->where('department_id',$department->id)->take(10)->get();
+        return view('frontend.home.doctorDetails',$data);
+    }
+
+
+    public function doctorAppointment(){
+        $data['doctors'] = Doctor::whereActive(true)->paginate(12);
+        $data['departments'] = BisesoggoCategory::whereActive(true)->get();
+        return view('frontend.home.doctorAppointment',$data);
+    }
+
+
+
+    public function hospitalList()
+    {
+        $data['hospitals'] = Hospital::whereActive(true)->paginate(12); 
+        return view('frontend.home.hospitalList', $data);
+    }
+
+    public function diagnostic()
+    {
+        return view('frontend.home.diagnostic');
+    }
+
+    public function hospitalDetails($id)
+    {
+        $data['hospital'] = $hospital = Hospital::whereActive(true)->findOrFail($id);
+        $data['doctors'] = $hospital->doctors()->whereActive(true)->paginate(12);
+
+        return view('frontend.home.hospitalDetails', $data);
+    }
+
+
+    public function departmentList()
+    {
+        $data['departments'] = BisesoggoCategory::whereActive(true)->paginate(12); 
+        return view('frontend.home.departmentList', $data);
+    }
+
+
+    // public function galleries()
+    // {
+    //     $path = public_path('frontend/assets/img/gallery');
+    //     $files = \File::files($path);
+    //     $images = [];
+    //     foreach ($files as $file) {
+    //         $images[] = $file->getFilename();
+    //     }
+    //     return view('frontend.home.gallery', compact('images'));
+    // }
+
+    public function imageGalleries()
+    {
+        $allGalleries = Gallery::where('active', 1)->orderBy('priority', 'asc')->get();
+        $images = $allGalleries->where('file_type', 'image');
+        return view('website.imagegallery', compact('images'));
+    }
+
+    public function videoGalleries()
+    {
+        $allGalleries = Gallery::where('active', 1)->orderBy('priority', 'asc')->get();
+        $videos = $allGalleries->where('file_type', 'video');
+        return view('website.videogallery', compact('videos'));
+    }
+
+
+
+    public function languageChange(Request $request)
+    {
+        $locale = $request->lang;
+
+        if (in_array($locale, config('app.locales')))
+        {
+            // $cookie = cookie('locale', $locale, 43200)
+
+            $request->session()->forget(['locale']);
+            $request->session()->put(['locale'=>$locale]);
+            // return redirect()->back()->withCookie($cookie);
+        }
+
+        return back();
+
+    }
+
+
+
+    public function news()
+    {
+        $data['news'] = BlogPost::whereActive(true)->whereStatus('published')->latest()->paginate(12);
+        return view('website.blog', $data);
+    }
+
+
+    public function singleNews($id)
+    {
+        $news = BlogPost::where('id', $id)->firstOrFail();
+        if (!$news) {
+            abort(404);
+        }
+        $news->increment('view_count');
+
+        $data['relatedPosts'] = BlogPost::where('category_id', $news->category_id)
+                                ->where('id', '!=', $news->id) // exclude current post
+                                ->where('active', true)        // only active posts
+                                ->where('status', 'published') // only published posts
+                                ->orderBy('created_at', 'desc') // latest first
+                                ->take(5)                       // limit to 5 posts
+                                ->get();
+
+        $data['latestPosts'] = BlogPost::where('active', true)
+                                ->where('status', 'published')
+                                ->orderBy('created_at', 'desc')
+                                ->take(5)
+                                ->get();
+
+        $data['newsCategories'] = \App\Models\BlogCategory::withCount('posts')->get();
+
+        $data['news'] = $news;
+        return view('website.blog_details', $data);
+    }
+
+
+
+    public function supportpolicy()
+    {
+        $page =  Page::where('type', 'support_policy')->first();
+        return view("frontend.home.policies.supportpolicy", compact('page'));
+    }
+
+    public function terms()
+    {
+        $page =  Page::where('type', 'terms_conditions')->first();
+        return view("frontend.home.policies.terms", compact('page'));
+    }
+
+    public function privacypolicy()
+    {
+        $page =  Page::where('type', 'privacy_policy')->first();
+        return view("frontend.home.privacypolicy", compact('page'));
+    }
+
+    public function helpcenter()
+    {
+        $page =  Page::where('type', 'help_center')->first();
+        return view("frontend.home.helpcenter", compact('page'));
+    }
+
+    public function contactus()
+    {
+        $page =  Page::where('type', 'contact_us')->first();
+        return view("frontend.home.policies.contactus", compact('page'));
+    }
+
+    public function aboutus()
+    {
+        $page =  Page::where('type', 'about_us')->first();
+        return view("frontend.home.aboutus", compact('page'));
+    }
+
+
+
+    public function storeAppointment(Request $request)
+    {
+        // ✅ Validation
+        $request->validate([
+            'name'             => 'required|string|max:255',
+            'email'            => 'required|email|max:255',
+            'mobile'           => 'required|string|max:20',
+            'department_id'    => 'required|integer',
+            'doctor_id'        => 'required|integer',
+            'appointment_date' => 'required|date',
+        ]);
+
+        try {
+            // ✅ Create new appointment
+            $appointment = new BookAppointment();
+            $appointment->name             = $request->name;
+            $appointment->email            = $request->email;
+            $appointment->mobile           = $request->mobile;
+            $appointment->department_id    = $request->department_id;
+            $appointment->doctor_id        = $request->doctor_id;
+            $appointment->appointment_date = $request->appointment_date;
+            $appointment->message          = $request->message ?? null;
+            $appointment->addedby_id       = Auth::id();
+            $appointment->save();
+
+            // ✅ Success message
+            // toast('Appointment Confirmed, Your appointment has been successfully booked.','success');
+            Alert::success('Appointment Confirmed', 'Your appointment has been successfully booked.');
+            return redirect()->back();
+
+        } catch (\Exception $e) {
+            // ✅ Error message
+            Alert::error('Something went wrong', 'We could not process your request. Please try again later.');
+            return redirect()->back()->withInput();
+        }
+    }
+
+
+    public function shasthoseba(Request $request)
+    {
+        $query = Product::whereActive(true)->where('type', 'product');
+
+        // Sorting
+        if ($request->get('sort') == 1) {
+            $query->latest();
+        } elseif ($request->get('sort') == 2) {
+            $query->oldest();
+        } elseif ($request->get('sort') == 3) {
+            $query->orderBy('final_price', 'desc');
+        } elseif ($request->get('sort') == 4) {
+            $query->orderBy('final_price', 'asc');
+        } else {
+            $query->latest();
+        }
+
+        $products = $query->paginate(12)->appends($request->all());
+
+        $categories = ProductCategory::whereActive(true)->where('type', 'product')->latest()->get();
+        $total_products = Product::whereActive(true)->where('type', 'product')->count();
+        $subcategories = ProductCategory::whereNull('parent_id')
+            ->where('active', 1)
+            ->where('type', 'product')
+            ->orderBy('name_en')
+            ->get();
+
+        // Get all root categories for sidebar
+        $allRootCategories = ProductCategory::whereNull('parent_id')
+            ->where('active', 1)
+            ->where('type', 'product')
+            ->orderBy('name_en')
+            ->get();
+
+        // Top clicked products
+        $topClickedProducts = Product::where('active', true)
+            ->where('type', 'product')
+            ->where('feature', true)
+            ->orderByDesc('click_count')
+            ->limit(6)
+            ->get();
+
+        return view("frontend.home.shasthoseba", compact(
+            'products', 
+            'categories', 
+            'total_products', 
+            'subcategories',
+            'allRootCategories',
+            'topClickedProducts' // Add this
+        ));
+    }
+
+
+    public function productCategory(Request $request, $slug = null)
+    {
+        $category = null;
+        $categories = collect();
+        $subcategories = collect();
+
+        $query = Product::where('active', 1);
+
+        if ($slug && $slug !== 'all') {
+            $category = ProductCategory::where('slug', $slug)
+                ->where('active', 1)
+                ->first();
+
+            if ($category) {
+                // Determine type based on category type
+                $query->where('type', $category->type);
+
+                if (is_null($category->parent_id)) {
+                    // 🟢 Case 1: Parent category — show subcategories
+                    $subcategories = ProductCategory::where('parent_id', $category->id)
+                        ->where('active', 1)
+                        ->orderBy('name_en')
+                        ->get();
+
+                    $subcategoryIds = $subcategories->pluck('id')->toArray();
+
+                    // Include products of parent + all its subcategories
+                    $query->whereHas('categories', function ($q) use ($category, $subcategoryIds) {
+                        $q->where('product_categories.id', $category->id)
+                        ->orWhereIn('product_categories.id', $subcategoryIds);
+                    });
+                } else {
+                    // 🟡 Case 2: Subcategory — only show products in that subcategory
+                    $subcategories = ProductCategory::where('parent_id', $category->parent_id)
+                        ->where('active', 1)
+                        ->orderBy('name_en')
+                        ->get();
+
+                    $query->whereHas('categories', function ($q) use ($category) {
+                        $q->where('product_categories.id', $category->id);
+                    });
+                }
+            }
+        } else {
+            // 🟣 For "All" — default to product if not specified? 
+            // Or just show based on request? Let's assume shop context
+            $query->where('type', 'product');
+            $categories = ProductCategory::whereNull('parent_id')
+                ->where('active', 1)
+                ->where('type', 'product')
+                ->orderBy('name_en')
+                ->get();
+        }
+
+        // Root categories for sidebar - match type
+        $type = $category ? $category->type : 'product';
+        $allRootCategories = ProductCategory::whereNull('parent_id')
+            ->where('active', 1)
+            ->where('type', $type)
+            ->orderBy('name_en')
+            ->get();
+
+        // Sorting
+        switch ($request->get('sort')) {
+            case 2:
+                $query->oldest();
+                break;
+            case 3:
+                $query->orderBy('selling_price', 'desc');
+                break;
+            case 4:
+                $query->orderBy('selling_price', 'asc');
+                break;
+            default:
+                $query->latest();
+                break;
+        }
+
+        // Price filter
+        if ($request->has('price')) {
+            $priceRange = explode('-', $request->get('price'));
+            if (count($priceRange) == 2) {
+                $query->whereBetween('selling_price', [$priceRange[0], $priceRange[1]]);
+            }
+        }
+
+        // Top clicked products
+        $topClickedProducts = Product::where('active', true)
+            ->where('type', $type)
+            ->where('feature', true)
+            ->orderByDesc('click_count')
+            ->limit(6)
+            ->get();
+
+        // Pagination and count
+        $products = $query->paginate(12)->appends($request->all());
+        $total_products = $query->count();
+
+        return view('website.shop_category', compact(
+            'products',
+            'category',
+            'categories',
+            'subcategories',
+            'total_products',
+            'allRootCategories',
+            'topClickedProducts',
+            'slug'
+        ));
+    }
+
+
+
+    public function productDetails(Request $request, $slug)
+    {
+        $product = Product::where('slug', $slug)
+            ->with('categories', 'reviews', 'media')
+            ->firstOrFail();
+
+        // Increment view count
+        $product->increment('click_count');
+
+        // Related products of same type
+        $relatedProducts = Product::where('type', $product->type)
+            ->whereHas('categories', function ($q) use ($product) {
+                $q->whereIn('product_categories.id', $product->categories->pluck('id'));
+            })
+            ->where('id', '!=', $product->id)
+            ->where('feature', true)
+            ->take(12)
+            ->get();
+
+        // Top clicked products of same type
+        $topClickedProducts = Product::where('active', true)
+            ->where('type', $product->type)
+            ->whereNotIn('id', [$product->id])
+            ->where('feature', true)
+            ->orderByDesc('click_count')
+            ->limit(3)
+            ->get();
+
+        if ($product->type === 'course') {
+            return view('website.course_detail', compact('product', 'relatedProducts', 'topClickedProducts'));
+        }
+
+        return view('website.shop_details', compact('product', 'relatedProducts', 'topClickedProducts'));
+    }
+
+
+    // public function productDetails(Request $request, $slug)
+    // {
+    //     $product = Product::where('slug', $slug)->with('categories', 'reviews', 'media')->first();
+
+    //     if(!$product){
+    //         abort(404);
+    //     }
+
+    //     $relatedProducts = Product::whereHas('categories', function($q) use ($product) {
+    //                             $q->whereIn('product_categories.id', $product->categories->pluck('id'));
+    //                         })
+    //                         ->where('id', '!=', $product->id)
+    //                         ->where('feature', true)
+    //                         ->take(12)
+    //                         ->get();
+
+    //     return view('website.shop_details', compact('product','relatedProducts'));
+    // }
+
+    public function cart()
+    {
+        $session_id = Session::get('session_id', function () {
+            $id = Session::getId();
+            Session::put('session_id', $id);
+            return $id;
+        });
+
+        $user_id = Auth::id() ?? 0;
+
+        // Fetch cart items for this user/session
+        $cartItems = Cart::with(['product', 'ebook'])
+            ->where(function($q) use ($session_id, $user_id) {
+                $q->where('session_id', $session_id);
+                if ($user_id > 0) {
+                    $q->orWhere('user_id', $user_id);
+                }
+            })
+            ->get();
+
+        // Calculate totals
+        $cartSubtotal = $cartItems->sum(function ($item) {
+            if ($item->ebook_id) {
+                return $item->quantity * $item->ebook->final_price;
+            }
+            return $item->quantity * $item->product->selling_price;
+        });
+
+        $hasCourse = $cartItems->contains(fn($item) => $item->product && $item->product->type === 'course');
+        $hasEbook = $cartItems->contains(fn($item) => $item->ebook_id !== null);
+        $hasProduct = $cartItems->contains(fn($item) => $item->product && $item->product->type !== 'course');
+
+        $ws = WebsiteParameter::first();
+
+        // Dhaka-based shipping charges (fallback to generic shipping_charge if not set)
+        $shippingInside  = (float) ($ws->shipping_inside_dhaka ?? $ws->shipping_charge ?? 0);
+        $shippingOutside = (float) ($ws->shipping_outside_dhaka ?? $ws->shipping_charge ?? 0);
+
+        // Default selected charge = inside Dhaka
+        $shippingCharge = $hasProduct ? $shippingInside : 0;
+
+        // Divisions for dependent address dropdowns
+        $divisions = Division::orderBy('name')->get(['id', 'name', 'bn_name']);
+
+        // We'll use website.cart as the unified checkout page
+        return view('website.cart', compact('cartItems', 'cartSubtotal', 'hasCourse', 'hasEbook', 'hasProduct', 'shippingCharge', 'shippingInside', 'shippingOutside', 'divisions', 'ws'));
+    }
+
+        public function updateQuantity(Request $request, $cartId)
+    {
+        try {
+            // Validate the request
+            $request->validate([
+                'quantity' => 'required|integer|min:1'
+            ]);
+
+            // Find the cart item
+            $cartItem = Cart::where('id', $cartId);
+            
+            // If you have user authentication, you might want to check if the cart item belongs to the user
+            if (Auth::check()) {
+                $cartItem = $cartItem->where('user_id', Auth::id());
+            } else {
+                // For guest users, you might use session_id or other identifier
+                $cartItem = $cartItem->where('session_id', session()->getId());
+            }
+            
+            $cartItem = $cartItem->first();
+
+            if (!$cartItem) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Cart item not found!'
+                ], 404);
+            }
+
+            // Check product stock if needed
+            $product = $cartItem->product;
+            if ($product->stock < $request->quantity) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Only ' . $product->stock . ' items available in stock!'
+                ]);
+            }
+
+            // Update quantity
+            $cartItem->update([
+                'quantity' => $request->quantity
+            ]);
+
+            // Calculate updated cart totals
+            $cartItems = Cart::with('product')
+                ->when(Auth::check(), function($query) {
+                    $query->where('user_id', Auth::id());
+                }, function($query) {
+                    $query->where('session_id', session()->getId());
+                })
+                ->get();
+
+            $cartSubtotal = $cartItems->sum(function($item) {
+                return $item->quantity * $item->product->final_price;
+            });
+
+            return response()->json([
+                'status' => true,
+                'message' => 'Quantity updated successfully!',
+                'cartSubtotal' => $cartSubtotal,
+                'cartCount' => $cartItems->sum('quantity')
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Something went wrong! Please try again.'
+            ], 500);
+        }
+    }
+
+    public function remove($id)
+    {
+        Cart::findOrFail($id)->delete();
+        return redirect()->back()->with('success', 'Product removed from cart!');
+    }
+
+public function update(Request $request)
+{
+    foreach($request->qty as $id => $qty){
+        $cart = Cart::find($id);
+        if($cart) $cart->update(['quantity' => $qty]);
+    }
+    return redirect()->back()->with('success', 'Cart updated successfully!');
+}
+
+
+
+    public function checkouts()
+    {
+        return view('website.checkout');
+    }
+ 
+
+
+    /**
+     * Add product to cart (session/user-wise)
+     */
+    public function addToCart(Request $request)
+    {
+        // if (!Session::has('session_id')) {
+        //     Session::put('session_id', session()->getId());
+        // }
+        // $session_id = Session::get('session_id');
+
+        $request->validate([
+            'product' => 'required|integer|exists:products,id',
+            'qty'     => 'required|integer|min:1'
+        ]);
+
+        $session_id = Session::get('session_id', function () {
+            $id = Session::getId();
+            Session::put('session_id', $id);
+            return $id;
+        });
+
+        $user_id   = Auth::id() ?? 0;
+        $productId = $request->product;
+        $qty = $request->qty ?? 1;
+
+        $product = Cache::remember("product_{$productId}", now()->addMinutes(10), function () use ($productId) {
+            return Product::find($productId);
+        });
+
+        if (!$product) {
+            abort(404, 'Product not found');
+        }
+
+        $cart = Cart::firstOrNew([
+            'product_id' => $product->id,
+            'session_id' => $session_id,
+            'user_id'    => $user_id,
+        ]);
+
+        $cart->quantity   = $cart->exists ? $cart->quantity + $qty : $qty;
+        $cart->addedby_id = $user_id;
+        $cart->save();
+
+        if ($request->ajax()) {
+            $message = $product->type === 'course' ? 'কোর্সটি কার্টে যোগ করা হয়েছে' : 'পণ্যটি কার্টে যোগ করা হয়েছে';
+            return response()->json([
+                'status'          => true,
+                'message'         => $message,
+                'productCartItem' => view('frontend.home.includes.productCartItem', compact('cart', 'product'))->render(),
+                'cartCount'       => Cart::cartCount(),
+                'cartItemsCount'  => Cart::CartItemsCount(),
+                'cartTotal'       => Cart::totalCartPrice(),
+            ]);
+        }
+
+        return response()->noContent();
+    }
+
+public function quickAdd(Request $request)
+{
+    $request->validate([
+        'id' => 'required|integer|exists:products,id'
+    ]);
+
+    $productId = $request->id;
+
+    $session_id = Session::get('session_id', function () {
+        $id = Session::getId();
+        Session::put('session_id', $id);
+        return $id;
+    });
+
+    $user_id = Auth::id() ?? 0;
+
+    // Cache product
+    $product = Cache::remember("product_{$productId}", now()->addMinutes(10), function () use ($productId) {
+        return Product::find($productId);
+    });
+
+    if (!$product) {
+        return response()->json(['error' => 'Product not found'], 404);
+    }
+
+    // Find or create cart item
+    $cart = Cart::firstOrNew([
+        'product_id' => $product->id,
+        'session_id' => $session_id,
+        'user_id'    => $user_id,
+    ]);
+
+    $cart->quantity   = $cart->exists ? $cart->quantity + 1 : 1;
+    $cart->addedby_id = $user_id;
+    $cart->save();
+
+    $message = $product->type === 'course' ? 'কোর্সটি কার্টে যোগ করা হয়েছে' : 'পণ্যটি কার্টে যোগ করা হয়েছে';
+    return response()->json([
+        'success' => true,
+        'message' => $message,
+        'id'      => $product->id,
+        'name'    => $product->name_en,
+        'price'   => $product->final_price,
+        'image'   => route('imagecache', ['template' => 'pnism', 'filename' => $product->fi()])
+    ]);
+}
+
+
+
+
+
+    public function addToCart2(Request $request)
+    {
+        $request->validate([
+            'product_id' => 'required|integer|exists:products,id',
+            'qty'        => 'required|integer|min:1'
+        ]);
+
+        $session_id = Session::get('session_id', function () {
+            $id = Session::getId();
+            Session::put('session_id', $id);
+            return $id;
+        });
+
+        $user_id   = Auth::id() ?? 0;
+        $productId = $request->product_id;
+
+        // Cache product for 10 minutes
+        $product = Cache::remember("product_{$productId}", now()->addMinutes(10), function () use ($productId) {
+            return Product::find($productId);
+        });
+
+        if (!$product) {
+            abort(404, 'Product not found');
+        }
+
+        // Find or create cart item
+        $cart = Cart::firstOrNew([
+            'product_id' => $product->id,
+            'session_id' => $session_id,
+            'user_id'    => $user_id,
+        ]);
+
+        // Update quantity
+        $cart->quantity   = $cart->exists ? $cart->quantity + $request->qty : $request->qty;
+        $cart->addedby_id = $user_id;
+        $cart->save();
+
+
+        $message = $product->type === 'course' ? 'কোর্সটি কার্টে যোগ করা হয়েছে' : 'পণ্যটি কার্টে যোগ করা হয়েছে';
+        return redirect()->back()->with([
+            'success' => $message,
+        ]);
+    }
+
+
+
+
+    /**
+     * Update cart item quantity
+     */
+    public function cartUpdateQty(Request $request)
+    {
+        
+        $request->validate([
+            'cart'    => 'required|integer|exists:carts,id',
+            'new_qty' => 'required|integer|min:0'
+        ]);
+
+        $cart = Cart::findOrFail($request->cart);
+
+        if ($request->new_qty == 0) {
+            $cart->delete();
+        } else {
+            $cart->update(['quantity' => $request->new_qty]);
+        }
+
+        if ($request->ajax()) {
+            $cartItems = Cart::getCartItems();
+            $hasProduct = $cartItems->contains(fn($item) => $item->product && $item->product->type !== 'course');
+            $ws = WebsiteParameter::first();
+            $shippingCharge = $hasProduct ? ($ws->shipping_charge ?? 0) : 0;
+            $cartTotal = Cart::totalCartPrice();
+            $discount = Cart::totalDiscountAmount();
+
+            return response()->json([
+                'status'        => true,
+                'message'       => 'Cart updated successfully!',
+                'product_id'    => $cart->product_id ?? null,
+                'add_to_cart_url' => route('addToCart'),
+                'cartCount'       => Cart::cartCount(),
+                'cartItemsCount'  => Cart::CartItemsCount(),
+                'cartTotal'       => $cartTotal,
+                'discount'        => $discount,
+                'shippingCharge'  => $shippingCharge,
+                'payable'         => $cartTotal - $discount + $shippingCharge,
+            ]);
+        }
+
+        return response()->noContent();
+    }
+
+    /**
+     * Remove a cart item
+     */
+     
+     public function cartRemoveItem($cartId)
+    {
+        $cart = Cart::find($cartId);
+ 
+        if (!$cart) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Cart item not found!'
+            ], 404);
+        }
+
+        // // Security check
+        // if (Auth::check() && $cart->user_id != Auth::id()) {
+        //     abort(403, 'Unauthorized action. 02');
+        // } elseif (!Auth::check() && $cart->session_id !== session('session_id')) {
+        //     abort(403, 'Unauthorized action.');
+        // }
+    
+        $cartId    = $cart->id;
+        $productId = $cart->product_id;
+    
+        $cart->delete();
+    
+        return response()->json([
+            'status'         => true,
+            'message'        => 'Item removed from cart!',
+            'cart_id'        => $cartId,
+            'product_id'     => $productId,
+            'add_to_cart_url'=> route('addToCart'),
+            'cartCount'      => Cart::cartCount(),
+            'cartItemsCount' => Cart::CartItemsCount(),
+            'cartTotal'      => Cart::totalCartPrice(),
+            'discount'       => Cart::totalDiscountAmount(),
+            'payable'        => Cart::totalCartPrice() - Cart::totalDiscountAmount(),
+        ]);
+    }
+
+    // public function cartRemoveItem(Cart $cart)
+    // {
+    //     // Security check
+    //     if (Auth::check() && $cart->user_id !== Auth::id()) {
+    //         abort(403, 'Unauthorized action.');
+    //     } elseif (!Auth::check() && $cart->session_id !== session('session_id')) {
+    //         abort(403, 'Unauthorized action.');
+    //     }
+
+    //     $cartId    = $cart->id;
+    //     $productId = $cart->product_id;
+
+    //     $cart->delete();
+
+    //     return response()->json([
+    //         'status'         => true,
+    //         'message'        => 'Item removed from cart!',
+    //         'cart_id'        => $cartId,
+    //         'product_id'     => $productId,
+    //         'add_to_cart_url'=> route('addToCart'),
+    //         'cartCount'      => Cart::cartCount(),
+    //         'cartItemsCount' => Cart::CartItemsCount(),
+    //         'cartTotal'      => Cart::totalCartPrice(),
+    //         'discount'       => Cart::totalDiscountAmount(),
+    //         'payable'        => Cart::totalCartPrice() - Cart::totalDiscountAmount(),
+    //     ]);
+    // }
+
+
+    public function checkout(Request $request)
+    {
+        return $this->cart();
+    }
+
+    public function new_checkout(Request $request)
+    {
+        return $this->cart();
+    }
+
+
+    
+    public function storeDeliveryLocation(Request $request)
+    {
+       
+        //  Validation
+        $request->validate([
+            'name'          => 'required',
+            'mobile'        => 'required',
+            'email'         => 'nullable|email',
+            'address_title' => 'required',
+        
+        ]);
+
+        // Check if delivery location exists for the user
+        $location = DeliveryLocation::where('user_id', Auth::id())->first();
+
+        // If exists, update; otherwise create new
+        if (!$location) {
+            $location = new DeliveryLocation();
+            $location->user_id = Auth::id();
+        }
+
+        // Set common fields
+        $location->name = $request->name;
+        $location->email = $request->email;
+        $location->mobile = $request->mobile;
+        $location->address_title = $request->address_title;
+        $location->save();
+
+        return redirect()->back()->with([
+            'success' => 'Delivery location saved successfully!',
+        ]);
+    }
+
+
+    public function codOrderStore(Request $request)
+    {
+        $ws = WebsiteParameter::first();
+        $cartItems = Cart::getCartItems();
+
+        if ($cartItems->isEmpty()) {
+            return redirect()->back()->with('error', 'Your cart is empty.');
+        }
+
+        $hasCourse = $cartItems->contains(fn($item) => $item->product && $item->product->type === 'course');
+        $hasEbook = $cartItems->contains(fn($item) => $item->ebook_id !== null);
+        $hasProduct = $cartItems->contains(fn($item) => $item->product && $item->product->type !== 'course');
+
+        // Delivery area is derived from the selected district (Dhaka => inside)
+        $deliveryArea = $this->deliveryAreaFromDistrict($request->input('district_id'));
+        // Full address from detail + upazila/district/division names
+        $billingAddress = $this->buildFullAddress($request);
+
+        $subtotal = $this->calculateSubtotal($cartItems);
+        $deliveryCost = $hasProduct ? $this->resolveDeliveryCost($ws, $deliveryArea) : 0;
+        $grandTotal = $subtotal + $deliveryCost;
+        $paymentMethod = $request->input('payment_method');
+        $transactionId = $request->input('transaction_id');
+
+        // Online payment requires a transaction id (TXN ID)
+        if ($paymentMethod === 'online' && empty($transactionId)) {
+            return redirect()->back()
+                ->withInput()
+                ->with('error', app()->getLocale() == 'bn'
+                    ? 'অনলাইন পেমেন্টের জন্য ট্রানজেকশন আইডি (TXN ID) দিন।'
+                    : 'Please provide the Transaction ID (TXN ID) for online payment.');
+        }
+
+        $orderNote = $request->order_note ?? null;
+        if ($request->office_address || $request->office_time) {
+            $extraNote = "";
+            if ($request->office_address) $extraNote .= "Office Address: " . $request->office_address . "\n";
+            if ($request->office_time) $extraNote .= "Office Time: " . $request->office_time . "\n";
+            $orderNote = $extraNote . ($orderNote ? "Note: " . $orderNote : "");
+        }
+        if ($hasProduct) {
+            $areaLabel = $deliveryArea === 'outside' ? 'ঢাকার বাইরে' : 'ঢাকার ভিতরে';
+            $orderNote = "ডেলিভারি এরিয়া: " . $areaLabel . "\n" . ($orderNote ?? '');
+        }
+
+        $registrationFields = [];
+        if ($hasCourse || $hasEbook) {
+            $registrationFields = [
+                'occupation' => $request->occupation,
+                'last_academic_status' => $request->last_academic_status,
+                'has_course' => $hasCourse,
+                'has_ebook' => $hasEbook,
+                'admin_approval' => 'pending',
+            ];
+        }
+
+        if (Auth::check()) {
+            $user = auth()->user();
+            if ($request->has('billing_address') && $hasProduct) {
+                DeliveryLocation::updateOrCreate(
+                    ['user_id' => $user->id],
+                    [
+                        'address_title' => $billingAddress,
+                        'name' => $request->input('name'),
+                        'mobile' => $request->input('mobile'),
+                        'email' => $request->input('email'),
+                    ]
+                );
+            }
+
+            $location = $this->getUserLocation($user);
+
+            if (!$location) {
+                $location = new \stdClass();
+                $location->name = $request->input('name') ?? $user->name;
+                $location->email = $request->input('email') ?? $user->email;
+                $location->mobile = $request->input('mobile') ?? $user->mobile;
+                $location->address_title = ($billingAddress ?: null) ?? (($hasCourse || $hasEbook) ? 'Registration' : 'Order');
+            }
+
+            $order = $this->createOrder($user, $location, $deliveryCost, $paymentMethod, $subtotal, $deliveryCost, $grandTotal, $orderNote, $registrationFields, $transactionId, ($hasProduct ? $deliveryArea : null));
+
+            $this->storeOrderItems($order, $cartItems, $user->id);
+            Cart::where('user_id', $user->id)->delete();
+
+            $msg = ($hasCourse || $hasEbook) ? 'রেজিস্ট্রেশন সম্পন্ন হয়েছে। এডমিন অ্যাপ্রুভালের জন্য অপেক্ষা করুন।' : 'অর্ডারটি সফলভাবে সম্পন্ন হয়েছে।';
+            return redirect()->route('order.complete')->with('success', $msg);
+        } else {
+            $rules = [
+                'name' => 'required|string|max:255',
+                'mobile' => 'required|string|max:20',
+                'email' => 'required|email|max:255',
+            ];
+            if ($hasProduct) {
+                $rules['billing_address'] = 'required|string|max:1000';
+                $rules['division_id'] = 'required|integer|exists:divisions,id';
+                $rules['district_id'] = 'required|integer|exists:districts,id';
+                $rules['upazila_id'] = 'required|integer|exists:upazilas,id';
+            }
+            if ($hasCourse || $hasEbook) {
+                $rules['occupation'] = 'required|string|max:255';
+                $rules['last_academic_status'] = 'nullable|string|max:255';
+            }
+            $request->validate($rules);
+
+            // Handle Guest Registration
+            $user = User::where('email', $request->email)->orWhere('mobile', $request->mobile)->first();
+            $isNewUser = false;
+
+            if (!$user) {
+                $isNewUser = true;
+                $password = Str::random(8);
+                $user = User::create([
+                    'name' => $request->name,
+                    'email' => $request->email,
+                    'mobile' => $request->mobile,
+                    'password' => Hash::make($password),
+                    'role' => 'user',
+                    'is_approve' => true,
+                ]);
+                
+                if ($user->email) {
+                    try {
+                        Mail::to($user->email)->send(new UserCredentialsEmail($user, $password));
+                    } catch (\Exception $e) {}
+                }
+                session(['temp_password' => $password]);
+                session(['temp_email' => $user->email]);
+            }
+
+            session(['is_new_user' => $isNewUser]);
+
+            $location = new \stdClass();
+            $location->name = $request->input('name');
+            $location->email = $request->input('email');
+            $location->mobile = $request->input('mobile');
+            $location->address_title = ($billingAddress ?: null) ?? (($hasCourse || $hasEbook) ? 'Registration' : 'Order');
+
+            $order = $this->createOrder($user, $location, $deliveryCost, $paymentMethod, $subtotal, $deliveryCost, $grandTotal, $orderNote, $registrationFields, $transactionId, ($hasProduct ? $deliveryArea : null));
+
+            $this->storeOrderItems($order, $cartItems, $user->id);
+            Cart::where('session_id', session('session_id'))->delete();
+
+            if ($location->email) {
+                try {
+                    Mail::to($location->email)->send(new OrderConfirmationEmail($order));
+                } catch (\Exception $e) {}
+            }
+
+            $msg = ($hasCourse || $hasEbook) ? 'রেজিস্ট্রেশন সম্পন্ন হয়েছে। এডমিন অ্যাপ্রুভালের জন্য অপেক্ষা করুন।' : 'অর্ডারটি সফলভাবে সম্পন্ন হয়েছে।';
+            return redirect()->route('order.complete')->with('success', $msg);
+        }
+    }
+
+    public function courseOrderStore(Request $request)
+    {
+        $ws = WebsiteParameter::first();
+        $cartItems = Cart::getCartItems();
+
+        if ($cartItems->isEmpty()) {
+            return redirect()->back()->with('error', 'Your cart is empty.');
+        }
+
+        $subtotal = $this->calculateSubtotal($cartItems);
+        $deliveryCost = 0;
+        $grandTotal = $subtotal + $deliveryCost;
+        $paymentMethod = $request->input('payment_method');
+        $orderNote = $request->order_note ?? null;
+
+        $courseFields = [
+            'occupation' => $request->occupation,
+            'last_academic_status' => $request->last_academic_status,
+            'has_course' => true,
+            'admin_approval' => 'pending',
+        ];
+
+        $isBn = app()->getLocale() == 'bn';
+        $successMsg = $isBn ? 'অর্ডারটি সফলভাবে সম্পন্ন হয়েছে।' : 'Order has been placed successfully.';
+
+        if (Auth::check()) {
+            $user = auth()->user();
+            $location = $this->getUserLocation($user);
+            
+            if (!$location) {
+                $location = new \stdClass();
+                $location->name = $request->input('name') ?? $user->name;
+                $location->email = $request->input('email') ?? $user->email;
+                $location->mobile = $request->input('mobile') ?? $user->mobile;
+                $location->address_title = 'Course Enrollment';
+            }
+
+            $order = $this->createOrder($user, $location, $deliveryCost, $paymentMethod, $subtotal, $deliveryCost, $grandTotal, $orderNote, $courseFields);
+            $this->storeOrderItems($order, $cartItems, $user->id);
+            Cart::where('user_id', $user->id)->delete();
+
+            return redirect()->route('order.complete')->with('success', $successMsg);
+        } else {
+            $rules = [
+                'name' => 'required|string|max:255',
+                'mobile' => 'required|string|max:20',
+                'email' => 'nullable|email|max:255',
+                'occupation' => 'required|string|max:255',
+                'last_academic_status' => 'nullable|string|max:255',
+            ];
+            $messages = [
+                'name.required' => $isBn ? 'আপনার নাম লিখুন' : 'Please enter your name',
+                'mobile.required' => $isBn ? 'আপনার মোবাইল নম্বর লিখুন' : 'Please enter your mobile number',
+                'occupation.required' => $isBn ? 'পেশা নির্বাচন করুন' : 'Please select your occupation',
+            ];
+            $request->validate($rules, $messages);
+
+            $user = null;
+            $isNewUser = false;
+            if ($request->email || $request->mobile) {
+                $user = User::where(function($q) use ($request) {
+                    if ($request->email) $q->where('email', $request->email);
+                    if ($request->mobile) $q->orWhere('mobile', $request->mobile);
+                })->first();
+            }
+
+            if (!$user) {
+                $isNewUser = true;
+                $password = Str::random(8);
+                $user = User::create([
+                    'name' => $request->name ?? 'Guest User',
+                    'email' => $request->email,
+                    'mobile' => $request->mobile,
+                    'password' => Hash::make($password),
+                    'role' => 'user',
+                    'is_approve' => true,
+                ]);
+                
+                if ($user->email) {
+                    try {
+                        Mail::to($user->email)->send(new \App\Mail\UserCredentialsEmail($user, $password));
+                    } catch (\Exception $e) {}
+                }
+                session(['temp_password' => $password]);
+                session(['temp_email' => $user->email]);
+                session(['is_new_user' => true]);
+            } else {
+                session(['is_new_user' => false]);
+            }
+
+            $location = new \stdClass();
+            $location->name = $request->input('name') ?? $user->name;
+            $location->email = $request->input('email') ?? $user->email;
+            $location->mobile = $request->input('mobile') ?? $user->mobile;
+            $location->address_title = 'Course Enrollment';
+
+            $order = $this->createOrder($user, $location, $deliveryCost, $paymentMethod, $subtotal, $deliveryCost, $grandTotal, $orderNote, $courseFields);
+            $this->storeOrderItems($order, $cartItems, $user->id);
+            Cart::where('session_id', session('session_id'))->delete();
+
+            if ($location->email) {
+                try {
+                    Mail::to($location->email)->send(new \App\Mail\OrderConfirmationEmail($order));
+                } catch (\Exception $e) {}
+            }
+
+            return redirect()->route('order.complete')->with('success', $successMsg);
+        }
+    }
+
+    public function productOrderStore(Request $request)
+    {
+        $ws = WebsiteParameter::first();
+        $cartItems = Cart::getCartItems();
+
+        if ($cartItems->isEmpty()) {
+            return redirect()->back()->with('error', 'Your cart is empty.');
+        }
+
+        $subtotal = $this->calculateSubtotal($cartItems);
+        $deliveryCost = $this->resolveDeliveryCost($ws, $request->input('delivery_area'));
+        $grandTotal = $subtotal + $deliveryCost;
+        $paymentMethod = $request->input('payment_method');
+
+        $orderNote = $request->order_note ?? null;
+        if ($request->office_address || $request->office_time) {
+            $extraNote = "";
+            if ($request->office_address) $extraNote .= "Office Address: " . $request->office_address . "\n";
+            if ($request->office_time) $extraNote .= "Office Time: " . $request->office_time . "\n";
+            $orderNote = $extraNote . ($orderNote ? "Note: " . $orderNote : "");
+        }
+        if ($request->filled('delivery_area')) {
+            $areaLabel = $request->input('delivery_area') === 'outside' ? 'ঢাকার বাইরে' : 'ঢাকার ভিতরে';
+            $orderNote = "ডেলিভারি এরিয়া: " . $areaLabel . "\n" . ($orderNote ?? '');
+        }
+
+        $isBn = app()->getLocale() == 'bn';
+        $successMsg = $isBn ? 'অর্ডারটি সফলভাবে সম্পন্ন হয়েছে।' : 'Order has been placed successfully.';
+
+        if (Auth::check()) {
+            $user = auth()->user();
+            if ($request->has('billing_address')) {
+                DeliveryLocation::updateOrCreate(
+                    ['user_id' => $user->id],
+                    [
+                        'address_title' => $request->input('billing_address'),
+                        'name' => $request->input('name'),
+                        'mobile' => $request->input('mobile'),
+                        'email' => $request->input('email'),
+                    ]
+                );
+            }
+
+            $location = $this->getUserLocation($user);
+            if (!$location) {
+                $location = new \stdClass();
+                $location->name = $request->input('name') ?? $user->name;
+                $location->email = $request->input('email') ?? $user->email;
+                $location->mobile = $request->input('mobile') ?? $user->mobile;
+                $location->address_title = $request->input('billing_address') ?? 'Product Order';
+            }
+
+            $order = $this->createOrder($user, $location, $deliveryCost, $paymentMethod, $subtotal, $deliveryCost, $grandTotal, $orderNote);
+            $this->storeOrderItems($order, $cartItems, $user->id);
+            Cart::where('user_id', $user->id)->delete();
+
+            return redirect()->route('order.complete')->with('success', $successMsg);
+        } else {
+            $rules = [
+                'name' => 'required|string|max:255',
+                'mobile' => 'required|string|max:20',
+                'email' => 'nullable|email|max:255',
+                'billing_address' => 'required|string|max:1000',
+            ];
+            $messages = [
+                'name.required' => $isBn ? 'আপনার নাম লিখুন' : 'Please enter your name',
+                'mobile.required' => $isBn ? 'আপনার মোবাইল নম্বর লিখুন' : 'Please enter your mobile number',
+                'billing_address.required' => $isBn ? 'ডেলিভারি ঠিকানা প্রদান করুন' : 'Please provide delivery address',
+            ];
+            $request->validate($rules, $messages);
+
+            $user = null;
+            if ($request->email || $request->mobile) {
+                $user = User::where(function($q) use ($request) {
+                    if ($request->email) $q->where('email', $request->email);
+                    if ($request->mobile) $q->orWhere('mobile', $request->mobile);
+                })->first();
+            }
+
+            if (!$user) {
+                $password = Str::random(8);
+                $user = User::create([
+                    'name' => $request->name ?? 'Guest User',
+                    'email' => $request->email,
+                    'mobile' => $request->mobile,
+                    'password' => Hash::make($password),
+                    'role' => 'user',
+                    'is_approve' => true,
+                ]);
+                
+                if ($user->email) {
+                    try {
+                        Mail::to($user->email)->send(new \App\Mail\UserCredentialsEmail($user, $password));
+                    } catch (\Exception $e) {}
+                }
+                session(['temp_password' => $password]);
+                session(['temp_email' => $user->email]);
+                session(['is_new_user' => true]);
+            } else {
+                session(['is_new_user' => false]);
+            }
+
+            $location = new \stdClass();
+            $location->name = $request->input('name') ?? $user->name;
+            $location->email = $request->input('email') ?? $user->email;
+            $location->mobile = $request->input('mobile') ?? $user->mobile;
+            $location->address_title = $request->input('billing_address');
+
+            $order = $this->createOrder($user, $location, $deliveryCost, $paymentMethod, $subtotal, $deliveryCost, $grandTotal, $orderNote);
+            $this->storeOrderItems($order, $cartItems, $user->id);
+            Cart::where('session_id', session('session_id'))->delete();
+
+            if ($location->email) {
+                try {
+                    Mail::to($location->email)->send(new \App\Mail\OrderConfirmationEmail($order));
+                } catch (\Exception $e) {}
+            }
+
+            return redirect()->route('order.complete')->with('success', $successMsg);
+        }
+    }
+
+
+
+    public function orderComplete()
+    {
+        $order = null;
+        if (Auth::check()) {
+            $order = \App\Models\Order::where('user_id', Auth::id())->with('orderItems.product')->latest()->first();
+        } else {
+            // Check for last order in session or just latest?
+            $order = \App\Models\Order::with('orderItems.product')->latest()->first();
+        }
+        return view('website.order_complete', compact('order'));
+    }
+
+    private function getUserLocation($user)
+    {
+        if ($user && method_exists($user, 'locations')) {
+            return $user->locations()->first();
+        }
+        return null;
+    }
+
+
+    private function calculateSubtotal($cartItems)
+    {
+        return $cartItems->sum(function ($cart) {
+            if ($cart->ebook_id) {
+                return $cart->ebook->final_price * $cart->quantity;
+            }
+            return $cart->product->selling_price * $cart->quantity;
+        });
+    }
+
+    /**
+     * Resolve delivery charge based on selected Dhaka area.
+     * Falls back to generic shipping_charge when area-specific value is not set.
+     */
+    private function resolveDeliveryCost($ws, $deliveryArea = 'inside')
+    {
+        $inside  = (float) ($ws->shipping_inside_dhaka ?? $ws->shipping_charge ?? 0);
+        $outside = (float) ($ws->shipping_outside_dhaka ?? $ws->shipping_charge ?? 0);
+
+        return $deliveryArea === 'outside' ? $outside : $inside;
+    }
+
+    /**
+     * AJAX: districts for a division.
+     */
+    public function getDistricts($divisionId)
+    {
+        return District::where('division_id', $divisionId)
+            ->orderBy('name')
+            ->get(['id', 'name', 'bn_name']);
+    }
+
+    /**
+     * AJAX: upazilas for a district.
+     */
+    public function getUpazilas($districtId)
+    {
+        return Upazila::where('district_id', $districtId)
+            ->orderBy('name')
+            ->get(['id', 'name', 'bn_name']);
+    }
+
+    /**
+     * Determine delivery area ('inside' / 'outside') from selected district.
+     * Dhaka district => inside, everything else => outside.
+     */
+    private function deliveryAreaFromDistrict($districtId)
+    {
+        if (!$districtId) {
+            return 'inside';
+        }
+        $district = District::find($districtId);
+
+        return ($district && strtolower($district->name) === 'dhaka') ? 'inside' : 'outside';
+    }
+
+    /**
+     * Build a full address string from the detail textarea + division/district/upazila names.
+     */
+    private function buildFullAddress($request)
+    {
+        $parts = [];
+        if ($request->filled('billing_address')) {
+            $parts[] = trim($request->input('billing_address'));
+        }
+        if ($request->filled('upazila_id') && ($u = Upazila::find($request->input('upazila_id')))) {
+            $parts[] = $u->name;
+        }
+        if ($request->filled('district_id') && ($d = District::find($request->input('district_id')))) {
+            $parts[] = $d->name;
+        }
+        if ($request->filled('division_id') && ($dv = Division::find($request->input('division_id')))) {
+            $parts[] = $dv->name;
+        }
+
+        return implode(', ', $parts);
+    }
+
+    private function createOrder($user, $location, $area, $paymentMethod, $subtotal, $deliveryCost, $grandTotal, $orderNote, $registrationFields = [], $transactionId = null, $deliveryArea = null)
+    {
+        // Online (TXN ID submitted) => awaiting admin verification; COD => unpaid
+        $paymentStatus = ($paymentMethod === 'online' && !empty($transactionId)) ? 'pending' : 'unpaid';
+
+        return Order::create(array_merge([
+            'user_id'        => $user ? $user->id : null,
+            'name'           => $location->name,
+            'email'          => $location->email,
+            'address_title'  => $location->address_title,
+            'mobile'         => $location->mobile,
+            'subtotal'       => $subtotal,
+            'grand_total'    => $grandTotal,
+            'payment_method' => $paymentMethod,
+            'payment_status' => $paymentStatus,
+            'payment_gateway'=> $paymentMethod,
+            'payment_trx_id' => $transactionId,
+            'delivery_cost'  => $deliveryCost,
+            'delivery_area'  => $deliveryArea,
+            'pending_at'     => now(),
+            'addedby_id'     => $user ? $user->id : null,
+            'order_note'     => $orderNote,
+        ], $registrationFields));
+    }
+
+    private function storeOrderItems($order, $cartItems, $userId)
+    {
+        $userId = $userId ?? $order->user_id;
+
+        foreach ($cartItems as $cart) {
+            if ($cart->ebook_id) {
+                $product_name = $cart->ebook->title_bn ?? $cart->ebook->title_en;
+                $product_price = $cart->ebook->final_price;
+                
+                OrderItem::create([
+                    'order_id'      => $order->id,
+                    'user_id'       => $userId,
+                    'ebook_id'      => $cart->ebook_id,
+                    'product_name'  => $product_name,
+                    'product_price' => $product_price,
+                    'quantity'      => $cart->quantity,
+                    'total_cost'    => $product_price * $cart->quantity,
+                    'addedby_id'    => $userId,
+                ]);
+
+                if ($userId) {
+                    Enrollment::updateOrCreate(
+                        ['user_id' => $userId, 'ebook_id' => $cart->ebook_id],
+                        [
+                            'order_id'    => $order->id,
+                            'enrolled_at' => ($order->payment_status == 'paid') ? now() : null,
+                            'status'      => ($order->payment_status == 'paid') ? 'active' : 'pending',
+                        ]
+                    );
+                }
+            } else {
+                $product = $cart->product;
+                
+                OrderItem::create([
+                    'order_id'      => $order->id,
+                    'user_id'       => $userId,
+                    'product_id'    => $cart->product_id,
+                    'product_name'  => $product->name_en,
+                    'product_price' => $product->selling_price,
+                    'quantity'      => $cart->quantity,
+                    'total_cost'    => $product->selling_price * $cart->quantity,
+                    'addedby_id'    => $userId,
+                ]);
+
+                // If it's a course, create enrollment
+                if ($product->isCourse() && $userId) {
+                    Enrollment::updateOrCreate(
+                        ['user_id' => $userId, 'product_id' => $product->id],
+                        [
+                            'order_id'    => $order->id,
+                            'enrolled_at' => ($order->payment_status == 'paid') ? now() : null,
+                            'status'      => ($order->payment_status == 'paid') ? 'active' : 'pending',
+                        ]
+                    );
+                }
+            }
+        }
+    }
+
+
+    public function reviewsStore(Request $request)
+    {
+        $request->validate([
+            'product_id' => 'required|exists:products,id',
+            'rating'     => 'required|integer|min:1|max:5',
+            'comment'    => 'required|string|max:1000',
+        ]);
+
+        ProductReview::create([
+            'user_id'    => Auth::id(),
+            'product_id' => $request->product_id,
+            'rating'     => $request->rating,
+            'comment'    => $request->comment,
+        ]);
+
+        return back()->with('success', 'Review submitted successfully!');
+    }
+
+
+    public function orderPrint(Order $order)
+    {
+        // A user may only print their own order (admins can print any)
+        $isAdmin = Auth::check() && (Auth::user()->hasRole('admin') || Auth::user()->role === 'admin');
+        if ($order->user_id && Auth::id() !== $order->user_id && !$isAdmin) {
+            abort(403, 'You are not allowed to view this invoice.');
+        }
+
+        $items = $order->orderItems()->get();
+
+        // Use the same invoice as the admin side
+        return view('admin.orders.orderPrint', compact('order', 'items'));
+    }
+
+
+     public function orderChalan(Order $order)
+    {
+        $items = $order->orderItems()->get();
+
+        return view('user.order.orderChalan', compact('order', 'items'));
+    }
+
+    public function testidcard(){
+          $user = User::findOrFail(136);
+          return view('idcard',compact('user'));
+    }
+
+    public function getShippingMethods($upazila_id)
+    {
+        $upazila = Upazila::find($upazila_id);
+        $area = $upazila->name;
+        $shippingMethods = shippingMethod::where('name', $area)->get();
+        return response()->json($shippingMethods);
+    }
+}
