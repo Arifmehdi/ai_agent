@@ -1,0 +1,87 @@
+/* ===================================================
+   Blog listing page — section-specific styles
+   (loads on top of style.css)
+   =================================================== */
+
+/* ---------- Hero ---------- */
+.blog-hero{
+  padding:54px 0 44px;
+  background:
+    radial-gradient(720px 340px at 82% 0%, #fdeaea 0%, transparent 62%),
+    #fbfbfc;
+}
+.blog-hero .hero-grid{ align-items:center; }
+.blog-hero h1{
+  font-size:42px;
+  line-height:1.12;
+  font-weight:800;
+  letter-spacing:-.02em;
+  color:var(--ink);
+  margin:16px 0 16px;
+}
+.blog-hero .lead{ max-width:380px; }
+.blog-hero .hero-media img{
+  border-radius:14px;
+  box-shadow:var(--shadow);
+  border:1px solid var(--line);
+}
+
+/* ---------- Featured ---------- */
+.featured-section{ padding:36px 0 28px; }
+.featured-grid{
+  display:grid;
+  grid-template-columns:1.5fr 1fr;
+  gap:24px;
+}
+.featured-side{
+  display:flex;
+  flex-direction:column;
+  gap:24px;
+}
+/* big featured image taller */
+.featured-main .news-thumb{ aspect-ratio:16/8.5; }
+.featured-main .news-card h3,
+.featured-main h3{ font-size:17px; }
+
+/* side cards: image + compact body */
+.featured-side .news-thumb{ aspect-ratio:16/8; }
+.featured-side .news-body{ padding:14px 16px 16px; }
+.featured-side .news-card h3{ margin-top:0; min-height:0; }
+
+/* ---------- Latest Articles ---------- */
+.latest-section{ padding:34px 0 56px; }
+.latest-head{
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:30px;
+  margin-bottom:30px;
+}
+.latest-head h2{
+  font-size:30px;
+  font-weight:800;
+  color:var(--ink);
+  letter-spacing:-.02em;
+  white-space:nowrap;
+}
+.latest-head p{
+  font-size:13.5px;
+  color:var(--text);
+  max-width:430px;
+  text-align:right;
+}
+.latest-grid{ gap:22px 22px; }
+
+/* ---------- Responsive ---------- */
+@media (max-width:900px){
+  .blog-hero .hero-grid{ grid-template-columns:1fr; }
+  .featured-grid{ grid-template-columns:1fr; }
+  .latest-grid{ grid-template-columns:repeat(2,1fr); }
+  .latest-head{ flex-direction:column; align-items:flex-start; gap:10px; }
+  .latest-head h2{ white-space:normal; }
+  .latest-head p{ text-align:left; }
+  .blog-hero h1{ font-size:34px; }
+}
+@media (max-width:600px){
+  .latest-grid{ grid-template-columns:1fr; }
+}

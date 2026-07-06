@@ -1,0 +1,91 @@
+/* ===================================================
+   Blog detail (article) — section-specific styles
+   (loads on top of style.css)
+   =================================================== */
+
+.article{
+  background:#fbfbfc;
+  padding:52px 0 64px;
+}
+.article-inner{
+  max-width:100%;
+  margin:0 auto;
+}
+
+/* Title */
+.article-inner h1{
+  font-size:30px;
+  line-height:1.28;
+  font-weight:800;
+  letter-spacing:-.01em;
+  color:var(--ink);
+  margin-bottom:18px;
+}
+
+/* Intro paragraph */
+.article-intro{
+  font-size:14.5px;
+  line-height:1.75;
+  color:var(--text);
+  margin-bottom:26px;
+}
+
+/* Hero & chart images */
+.article-hero,
+.article-chart{
+  margin:24px 0 30px;
+}
+.article-hero img{
+  width:100%;
+  border-radius:12px;
+  display:block;
+}
+.article-chart{
+  background:#fff;
+  border:1px solid var(--line);
+  border-radius:14px;
+  padding:18px;
+  box-shadow:var(--shadow-sm);
+}
+.article-chart img{
+  width:100%;
+  border-radius:8px;
+  display:block;
+}
+
+/* Section subheadings */
+.article-inner h3{
+  font-size:19px;
+  font-weight:700;
+  color:var(--ink);
+  margin:28px 0 12px;
+}
+
+/* Body text */
+.article-inner p{
+  font-size:14.5px;
+  line-height:1.78;
+  color:var(--text);
+  margin-bottom:16px;
+}
+
+/* Bullet list */
+.article-inner ul{
+  list-style:disc;
+  padding-left:22px;
+  margin:6px 0 18px;
+}
+.article-inner li{
+  font-size:14.5px;
+  line-height:1.7;
+  color:var(--text);
+  margin-bottom:7px;
+}
+.article-inner li::marker{ color:var(--muted); }
+
+/* ---------- Responsive ---------- */
+@media (max-width:680px){
+  .article{ padding:36px 0 48px; }
+  .article-inner h1{ font-size:24px; }
+  .article-chart{ padding:12px; }
+}

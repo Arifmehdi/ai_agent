@@ -1,0 +1,116 @@
+<!-- =====================================================================
+     CALIBRAS — Capability Mind-map (animated, self-contained)
+     HOW TO USE in Elementor:
+       1. Drop an "HTML" widget where the mind-map should sit.
+       2. Paste this ENTIRE block.
+       3. Replace  REPLACE_WITH_MEDIA_URL  with the Elector logo image URL
+          from your WordPress Media Library.
+     The brackets DRAW themselves, pills POP IN staggered, and the Elector
+     box SCALES IN — triggered when the section scrolls into view.
+     ===================================================================== -->
+
+<div class="ehub" id="cal-ehub">
+  <div class="ehub-group">
+    <span class="epill">Drawings</span>
+    <span class="epill">3D Models</span>
+    <span class="epill">P &amp; IDs</span>
+    <span class="epill">Standards</span>
+  </div>
+
+  <svg class="ehub-bracket" viewBox="0 0 46 106" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M0 23 H30 Q42 23 42 35 V71 Q42 83 30 83 H0 M42 53 H46"
+          fill="none" stroke="#d3d3d8" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+  </svg>
+  <span class="ehub-line"></span>
+
+  <div class="ehub-center">
+    <img src="REPLACE_WITH_MEDIA_URL" alt="Elector" />
+  </div>
+
+  <span class="ehub-line"></span>
+  <svg class="ehub-bracket" viewBox="0 0 46 106" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M46 23 H16 Q4 23 4 35 V71 Q4 83 16 83 H46 M0 53 H4"
+          fill="none" stroke="#d3d3d8" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+  </svg>
+
+  <div class="ehub-group">
+    <span class="epill">Quotation</span>
+    <span class="epill">Risk Reporat</span>
+    <span class="epill">Knowledge</span>
+    <span class="epill">Workflow</span>
+  </div>
+</div>
+
+<style>
+  /* ----- layout (matches the existing site) ----- */
+  #cal-ehub{
+    display:flex; align-items:center; justify-content:center;
+    width:100%; max-width:960px; margin:0 auto;
+    font-family:'Inter',sans-serif;
+  }
+  #cal-ehub .ehub-group{ display:grid; grid-template-columns:repeat(2,1fr); gap:14px; flex:none; }
+  #cal-ehub .epill{
+    display:flex; align-items:center; justify-content:center;
+    height:46px; min-width:128px; padding:0 22px;
+    background:#fff; border:1px solid #e9e9ec; border-radius:12px;
+    font-size:14px; font-weight:500; color:#3c424b;
+    box-shadow:0 1px 2px rgba(20,23,28,.04); white-space:nowrap;
+  }
+  #cal-ehub .ehub-bracket{ flex:none; width:42px; height:106px; }
+  #cal-ehub .ehub-line{ flex:1; align-self:center; height:2px; min-width:24px; background:#d3d3d8; }
+  #cal-ehub .ehub-center{ flex:none; margin:0 6px; }
+  #cal-ehub .ehub-center img{ display:block; width:148px; height:auto; border-radius:12px; }
+
+  /* ----- animation: initial (hidden) states ----- */
+  #cal-ehub .epill{
+    opacity:0; transform:translateY(10px) scale(.96);
+    transition:opacity .5s ease, transform .5s cubic-bezier(.2,.7,.2,1);
+  }
+  #cal-ehub .ehub-center{
+    opacity:0; transform:scale(.8);
+    transition:opacity .5s ease, transform .5s cubic-bezier(.2,.7,.2,1);
+    transition-delay:.5s;
+  }
+  /* line-draw: dash the bracket paths + scale the straight lines */
+  #cal-ehub .ehub-bracket path{
+    stroke-dasharray:200; stroke-dashoffset:200;
+    transition:stroke-dashoffset .7s ease;
+    transition-delay:.15s;
+  }
+  #cal-ehub .ehub-line{ transform:scaleX(0); transform-origin:center; transition:transform .5s ease; transition-delay:.55s; }
+
+  /* ----- animation: revealed states ----- */
+  #cal-ehub.is-drawn .ehub-bracket path{ stroke-dashoffset:0; }
+  #cal-ehub.is-drawn .ehub-line{ transform:scaleX(1); }
+  #cal-ehub.is-drawn .ehub-center{ opacity:1; transform:none; }
+  #cal-ehub.is-drawn .epill{ opacity:1; transform:none; }
+  #cal-ehub.is-drawn .ehub-group .epill:nth-child(1){ transition-delay:.65s; }
+  #cal-ehub.is-drawn .ehub-group .epill:nth-child(2){ transition-delay:.73s; }
+  #cal-ehub.is-drawn .ehub-group .epill:nth-child(3){ transition-delay:.81s; }
+  #cal-ehub.is-drawn .ehub-group .epill:nth-child(4){ transition-delay:.89s; }
+
+  @media (max-width:820px){
+    #cal-ehub{ flex-wrap:wrap; gap:14px; max-width:420px; }
+    #cal-ehub .ehub-bracket, #cal-ehub .ehub-line{ display:none; }
+    #cal-ehub .ehub-center{ order:-1; width:100%; display:flex; justify-content:center; margin:0; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    #cal-ehub .epill, #cal-ehub .ehub-center{ opacity:1!important; transform:none!important; }
+    #cal-ehub .ehub-bracket path{ stroke-dashoffset:0!important; }
+    #cal-ehub .ehub-line{ transform:scaleX(1)!important; }
+  }
+</style>
+
+<script>
+  (function(){
+    var hub = document.getElementById("cal-ehub");
+    if(!hub) return;
+    if(!("IntersectionObserver" in window)){ hub.classList.add("is-drawn"); return; }
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if(e.isIntersecting){ e.target.classList.add("is-drawn"); io.unobserve(e.target); }
+      });
+    }, { threshold:0.35 });
+    io.observe(hub);
+  })();
+</script>

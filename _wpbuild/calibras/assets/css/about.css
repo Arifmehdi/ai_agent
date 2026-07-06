@@ -96,8 +96,7 @@
 }
 .team-grid--2{
   grid-template-columns:repeat(2,1fr);
-  /* two cards + one gap, matching the 3-column row's card width exactly */
-  max-width:calc((200% - 24px)/3);
+  max-width:660px;
   margin:0 auto;
 }
 .team-card{

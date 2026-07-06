@@ -1,0 +1,119 @@
+/* =====================================================================
+   CALIBRAS — Animations & micro-interactions
+   Paste into:  Elementor → Site Settings → Custom CSS
+   (Works alongside Elementor's native Entrance Animations.)
+   ===================================================================== */
+
+/* ---------- Respect users who ask for less motion ---------- */
+@media (prefers-reduced-motion: reduce){
+  *, *::before, *::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
+  }
+}
+
+/* ---------- Smooth anchor scrolling ---------- */
+html{ scroll-behavior:smooth; }
+
+/* =====================================================================
+   1. HOVER / MICRO-INTERACTIONS
+   Map these class names to your Elementor widgets' CSS Classes
+   (Advanced → CSS Classes), or rename to match your build.
+   ===================================================================== */
+
+/* Card lift — apply class .fx-lift to project / news / voice / info cards */
+.fx-lift{ transition:transform .25s ease, box-shadow .25s ease; }
+.fx-lift:hover{
+  transform:translateY(-4px);
+  box-shadow:0 14px 34px rgba(20,23,28,.10);
+}
+
+/* Button arrow nudge — apply .fx-btn to CTA buttons that contain an arrow */
+.fx-btn .arr,
+.fx-btn i{ transition:transform .2s ease; display:inline-block; }
+.fx-btn:hover .arr,
+.fx-btn:hover i{ transform:translateX(4px); }
+
+/* Video thumb zoom + play pulse — apply .fx-video to the video card */
+.fx-video img{ transition:transform .4s ease; }
+.fx-video:hover img{ transform:scale(1.05); }
+.fx-video .play{ animation:fxPulse 2.4s ease-in-out infinite; }
+@keyframes fxPulse{
+  0%,100%{ box-shadow:0 8px 24px rgba(194,16,26,.45); }
+  50%   { box-shadow:0 8px 30px rgba(194,16,26,.75); }
+}
+
+/* Team photo grayscale → color — apply .fx-photo to the image wrapper */
+.fx-photo img{ filter:grayscale(1); transition:filter .4s ease, transform .4s ease; }
+.fx-photo:hover img{ filter:grayscale(0); transform:scale(1.03); }
+
+/* "Most Popular" pricing card gentle float — apply .fx-float */
+.fx-float{ animation:fxFloat 4s ease-in-out infinite; }
+@keyframes fxFloat{
+  0%,100%{ transform:translateY(-8px); }
+  50%   { transform:translateY(-14px); }
+}
+
+/* Soft pulsing glow for the red CTA banner — apply .fx-glow */
+.fx-glow{ animation:fxGlow 3.5s ease-in-out infinite; }
+@keyframes fxGlow{
+  0%,100%{ box-shadow:0 18px 40px rgba(194,16,26,.18); }
+  50%   { box-shadow:0 22px 60px rgba(194,16,26,.34); }
+}
+
+/* =====================================================================
+   2. SCROLL-REVEAL UTILITY  (optional — if you don't use Elementor's
+   built-in entrance animations). Add class .reveal (+ optional
+   .reveal--left / .reveal--right / .reveal--zoom) to any element.
+   animations.js adds .is-visible when it scrolls into view.
+   Stagger with inline style: style="--d:120ms"
+   ===================================================================== */
+.reveal{
+  opacity:0;
+  transform:translateY(22px);
+  transition:opacity .6s ease, transform .6s cubic-bezier(.2,.7,.2,1);
+  transition-delay:var(--d, 0ms);
+  will-change:opacity, transform;
+}
+.reveal--left { transform:translateX(-28px); }
+.reveal--right{ transform:translateX(28px);  }
+.reveal--zoom { transform:scale(.94); }
+.reveal.is-visible{
+  opacity:1;
+  transform:none;
+}
+
+/* =====================================================================
+   3. MIND-MAP (Elector capability section) — animation states
+   Used by mindmap-widget.html. Safe to keep here.
+   ===================================================================== */
+.ehub .epill{
+  opacity:0; transform:translateY(10px) scale(.96);
+  transition:opacity .5s ease, transform .5s cubic-bezier(.2,.7,.2,1);
+}
+.ehub .ehub-center{
+  opacity:0; transform:scale(.8);
+  transition:opacity .5s ease, transform .5s cubic-bezier(.2,.7,.2,1);
+  transition-delay:.45s;
+}
+.ehub .ehub-bracket path,
+.ehub .ehub-line{ /* line draw handled inline in the widget */ }
+
+.ehub.is-drawn .epill{ opacity:1; transform:none; }
+.ehub.is-drawn .ehub-center{ opacity:1; transform:none; }
+/* stagger the pills */
+.ehub.is-drawn .ehub-group .epill:nth-child(1){ transition-delay:.10s; }
+.ehub.is-drawn .ehub-group .epill:nth-child(2){ transition-delay:.18s; }
+.ehub.is-drawn .ehub-group .epill:nth-child(3){ transition-delay:.26s; }
+.ehub.is-drawn .ehub-group .epill:nth-child(4){ transition-delay:.34s; }
+
+/* =====================================================================
+   4. READING PROGRESS BAR (blog-detail) — used by animations.js
+   ===================================================================== */
+#fx-progress{
+  position:fixed; top:0; left:0; height:3px; width:0;
+  background:linear-gradient(90deg,#c2101a,#e11b27);
+  z-index:9999; transition:width .1s linear;
+}
